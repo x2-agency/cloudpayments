@@ -29,21 +29,31 @@ NSString * const POST_BACK_URL = @"https://demo.cloudpayments.ru/WebFormPost/Get
 
     [[NSURLCache sharedURLCache] removeCachedResponseForRequest: request];
 
-    NSHTTPURLResponse *response;
-    NSError *error;
-    NSData *responseData = [NSURLConnection sendSynchronousRequest:request
-                                                 returningResponse:&response
-                                                             error:&error];
-    
+    // Запрос к ACS банка — асинхронно. Раньше здесь был
+    // +[NSURLConnection sendSynchronousRequest:], а метод вызывается из
+    // обработчика method channel на главном потоке: пока банк отвечал,
+    // интерфейс стоял (App Hanging, NORMA-APP-2E, 12.09.2026). Ответ
+    // разбираем на главной очереди — там создаётся WKWebView и зовётся
+    // делегат, как и прежде. self удерживается блоком до ответа: плагин
+    // отпускает D3DS только из колбэков делегата.
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData * _Nullable responseData, NSURLResponse * _Nullable urlResponse, NSError * _Nullable error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self handleAcsResponse:(NSHTTPURLResponse *) urlResponse data:responseData];
+        });
+    }];
+    [task resume];
+}
+
+-(void) handleAcsResponse: (NSHTTPURLResponse *) response data: (NSData *) responseData {
     if (([response statusCode] == 200) || ([response statusCode] == 201)) {
-        
+
         WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
         webView = [[WKWebView alloc] initWithFrame:controller.view.frame configuration:configuration];
         [webView setNavigationDelegate: self];
         [controller.view addSubview:webView];
-        
+
         [webView loadData:responseData MIMEType:[response MIMEType] characterEncodingName:[response textEncodingName] baseURL:[response URL]];
-      
+
     } else {
         NSString *messageString = [NSString stringWithFormat:@"Unable to load 3DS autorization page.\nStatus code: %d", (unsigned int)[response statusCode]];
         [delegate authorizationFailedWithHtml:messageString];
